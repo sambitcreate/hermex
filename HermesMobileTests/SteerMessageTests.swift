@@ -184,6 +184,92 @@ final class SteerMessageTests: XCTestCase {
         XCTAssertFalse(projected.messages[0].isSteerMessage)
     }
 
+    /// Steers in bot history get the same mention-note stripping as ordinary
+    /// user rows: the hidden agent-profile annotation must not leak profile
+    /// IDs into the cached transcript.
+    func testBotProjectionStripsMentionAnnotationFromSteers() throws {
+        let profile = try XCTUnwrap(BotProfile(.object(["name": .string("analyst")])))
+        let mentions = BotMentions(roster: [profile], excluding: "other")
+        let steerText = "@analyst dig deeper"
+        let annotated = steerText + mentions.annotation(for: steerText)
+        XCTAssertNotEqual(annotated, steerText)
+
+        let history: [BotJSON] = [
+            .object([
+                "role": .string("user"),
+                "text": .string(annotated),
+                "display_kind": .string("steer"),
+            ]),
+        ]
+        let projected = BotTranscriptProjection.project(history: history, root: "root")
+        XCTAssertEqual(projected.messages.count, 1)
+        XCTAssertEqual(projected.messages[0].content, steerText)
+    }
+
+    // MARK: - Active-stream snapshot restoration
+
+    /// A steer echo appended after the streaming assistant must not move the
+    /// assistant search range: the persisted assistant row is reconciled with
+    /// the snapshot instead of being duplicated.
+    func testSteerEchoDoesNotBreakActiveStreamSnapshotMerge() {
+        let snapshotAssistant = ChatMessage(
+            role: "assistant",
+            content: "partial response",
+            timestamp: 1_770_000_090,
+            messageId: "a-snapshot"
+        )
+        let snapshot = ActiveChatStreamSnapshot(
+            messages: [
+                ChatMessage(role: "user", content: "hi", timestamp: 1_770_000_080, messageId: "u-1"),
+                snapshotAssistant,
+            ],
+            messagesOffset: 0,
+            displayTitle: "",
+            completedToolCallGroups: [],
+            completedReasoningGroups: [],
+            liveToolCalls: [],
+            liveReasoningText: "",
+            activeStreamLastEventID: nil,
+            streamingAssistantMessageID: "a-snapshot",
+            toolCallAnchorMessageID: nil,
+            reasoningAnchorMessageID: nil,
+            contextWindowSnapshot: nil,
+            localAttachmentPreviews: [:],
+            pinnedLocalNotices: []
+        )
+        // The persisted assistant row carries a different id than the
+        // snapshot's, as when the stream persisted under a new row while the
+        // steer echo was still trailing.
+        let loadedMessages = [
+            ChatMessage(role: "user", content: "hi", timestamp: 1_770_000_080, messageId: "u-1"),
+            ChatMessage(role: "assistant", content: "partial response and more", timestamp: 1_770_000_095, messageId: "a-persisted"),
+            ChatMessage(role: "user", content: "keep it short", timestamp: 1_770_000_100, messageId: "local-steer-1", displayKind: "steer"),
+        ]
+
+        let merge = ChatViewModel.mergingLoadedMessages(loadedMessages, withActiveStreamSnapshot: snapshot)
+
+        XCTAssertEqual(merge.messages.map(\.messageId), ["u-1", "a-persisted", "local-steer-1"])
+        XCTAssertEqual(merge.streamingAssistantMessageID, "a-persisted")
+        XCTAssertFalse(merge.usedSnapshotMessagesOffset)
+    }
+
+    /// A trailing steer echo must not hide an in-flight assistant response
+    /// from the stream coordinator's latest-load check.
+    func testTrailingSteerEchoDoesNotHideInFlightAssistant() {
+        let withSteerEcho = [
+            ChatMessage(role: "user", content: "hi", timestamp: 1_770_000_080, messageId: "u-1"),
+            ChatMessage(role: "assistant", content: "partial", timestamp: 1_770_000_090, messageId: "a-1"),
+            ChatMessage(role: "user", content: "keep it short", timestamp: 1_770_000_100, messageId: "local-steer-1", displayKind: "steer"),
+        ]
+        XCTAssertTrue(ChatViewModel.hasAssistantResponseAfterLatestUser(in: withSteerEcho))
+
+        let steerOnly = [
+            ChatMessage(role: "user", content: "hi", timestamp: 1_770_000_080, messageId: "u-1"),
+            ChatMessage(role: "user", content: "keep it short", timestamp: 1_770_000_100, messageId: "local-steer-1", displayKind: "steer"),
+        ]
+        XCTAssertFalse(ChatViewModel.hasAssistantResponseAfterLatestUser(in: steerOnly))
+    }
+
     // MARK: - Local echo lifecycle
 
     /// A steer echo only matches a persisted steer row: without kind-aware

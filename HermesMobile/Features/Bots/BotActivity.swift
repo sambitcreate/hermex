@@ -191,10 +191,12 @@ enum BotTranscriptProjection {
                 let id = "\(root)/\(index)"
                 flush(anchor: id)
                 let displayKind = row["display_kind"].text
-                let isSteer = displayKind == ChatMessage.steerDisplayKind
+                // Steers get the same mention-note stripping as ordinary user
+                // rows: the hidden agent-profile annotation must never leak
+                // profile IDs into bot history.
                 messages.append(ChatMessage(
                     role: role,
-                    content: role == "user" && !isSteer ? BotMentions.displayText(text) : text,
+                    content: role == "user" ? BotMentions.displayText(text) : text,
                     timestamp: nil,
                     messageId: id,
                     displayKind: displayKind
