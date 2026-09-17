@@ -847,7 +847,12 @@ private struct SessionChatPresentationFixture: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(messages) { message in MessageBubbleView(message: message) }
+                ForEach(messages) { message in
+                    MessageBubbleView(
+                        message: message,
+                        transcriptMediaCacheNamespace: "https://webui.example|test"
+                    )
+                }
             }
             .padding(.horizontal, dynamicTypeSize.isAccessibilitySize ? 20 : 16)
             .padding(.vertical, 16)
