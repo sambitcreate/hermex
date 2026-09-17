@@ -1755,7 +1755,10 @@ final class ChatViewModel {
     }
 
     func actionContext(for message: ChatMessage, visibleIndex: Int) -> MessageActionContext? {
-        MessageActionContext(
+        // Steering hints are annotations on the active turn, not user-editable
+        // content: no edit/fork/copy actions.
+        guard !message.isSteerMessage else { return nil }
+        return MessageActionContext(
             message: message,
             visibleIndex: visibleIndex,
             messagesOffset: messagesOffset
@@ -2192,6 +2195,15 @@ final class ChatViewModel {
                 return true
             }
 
+            // Steer echoes only match persisted steer rows (and vice versa):
+            // the wrapper is stripped for content comparison, so without this
+            // gate an ordinary repeated prompt could swallow a persisted steer
+            // row, or a steer echo could swallow an ordinary user message with
+            // identical text.
+            guard loadedMessage.isSteerMessage == localMessage.isSteerMessage else {
+                return false
+            }
+
             guard normalizedUserMessageContent(loadedMessage.content) == localContent else {
                 return false
             }
@@ -2285,9 +2297,16 @@ final class ChatViewModel {
         // Share the single marker parser with the display layer so the two can
         // never disagree about what counts as an attachment marker. Trim the
         // result because this normalized form is compared for dedup equality.
-        return MessageAttachment
+        let withoutAttachments = MessageAttachment
             .contentWithoutAttachedFilesMarker(in: content)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // The server persists an accepted steer wrapped in the out-of-band
+        // marker while the local echo carries the bare text. Strip the wrapper
+        // so the persisted row is recognized as the echo's server copy instead
+        // of a duplicate.
+        let steerStripped = ChatMessage.strippedSteerText(from: withoutAttachments)
+            ?? withoutAttachments
+        return steerStripped.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     nonisolated private static func attachmentKeys(for message: ChatMessage) -> Set<String> {
@@ -2791,6 +2810,7 @@ final class ChatViewModel {
         do {
             let response = try await client.steerChat(sessionID: sessionID, text: message)
             if response.accepted == true {
+                appendLocalSteerEcho(message)
                 showSteeringConfirmation(String(localized: "Steering hint delivered."))
                 return .executed(message: nil)
             }
@@ -2801,6 +2821,20 @@ final class ChatViewModel {
         _ = enqueueQueuedSlashMessage(message, attachments: attachmentCoordinator.consumePendingAttachments())
         await cancelActiveStream()
         return .executed(message: String(localized: "Steer was unavailable, so the message was queued and the current response was stopped."))
+    }
+
+    /// Appends the local echo of an accepted steer immediately, so the hint is
+    /// visible before the server persists it. The `local-steer-` id marks it as
+    /// optimistic: when the persisted row arrives in `.done` or a reload, the
+    /// steer-aware merge drops this echo instead of duplicating it.
+    private func appendLocalSteerEcho(_ text: String) {
+        messages.append(ChatMessage(
+            role: "user",
+            content: text,
+            timestamp: Date().timeIntervalSince1970,
+            messageId: "local-steer-\(UUID().uuidString)",
+            displayKind: ChatMessage.steerDisplayKind
+        ))
     }
 
     private func interruptResponseFromSlashCommand(_ args: String) async -> SlashCommandExecutionResult {
