@@ -346,6 +346,7 @@ private enum HermexAttachmentCameraError: Error {
 
 struct HermexAttachmentCameraPanel: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var controller: HermexAttachmentCameraController
     let isBusy: Bool
     let onBack: () -> Void
@@ -374,6 +375,7 @@ struct HermexAttachmentCameraPanel: View {
 
             controls
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.captureDevice != nil)
         .onAppear {
             if scenePhase == .active { controller.start() }
         }

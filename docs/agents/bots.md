@@ -254,14 +254,16 @@ keeps an upload pending while checking display-link frames and editor state.
 
 Copies and records use the Bot draft key (server + connection UUID
 + Profile); navigation/relaunch never uploads them. Imports allow eight files,
-25 MB each and 50 MB total. Images are converted off the main actor to JPEG,
-limited to 4096 pixels on the longest edge; PDFs, text, audio and common document
+25 MB each and 50 MB total. Images are converted off the main actor to JPEG
+or PNG when they contain transparency, limited to 4096 pixels on the longest
+edge; PDFs, text, audio and common document
 formats retain their original bytes. Removal deletes the local copy after the
 updated record reaches disk.
 
 Send and Queue upload the selected files and put only acknowledged references in
 that prompt. Steer/Redirect remain text-only. Images use the authenticated
-`POST /api/chat/image-upload?profile=…` with `{filename, data_url}` and require
+`POST /api/chat/image-upload?profile=…` with `{filename, data_url}` using the
+matching JPEG or PNG data URL and require
 `{ok: true, path}`. This stores the image without touching `attached_images`.
 The prompt carries the returned absolute path with the vision-tool instruction
 used by Hermes's `_build_image_ref_message`; analysis uses the host's configured

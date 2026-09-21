@@ -148,6 +148,15 @@ final class HermexAttachmentPickerPolicyTests: XCTestCase {
         XCTAssertEqual(selection, ["b"])
     }
 
+    func testLibraryRefreshRemovesInvisibleSelectionsWithoutReorderingSurvivors() {
+        let selected = ["first", "removed", "last"]
+        XCTAssertEqual(
+            HermexAttachmentPickerPolicy.visibleSelection(selected, visibleIDs: ["last", "first"]),
+            ["first", "last"]
+        )
+        XCTAssertTrue(HermexAttachmentPickerPolicy.visibleSelection(selected, visibleIDs: []).isEmpty)
+    }
+
     func testLifecycleFenceRejectsLateCompletion() {
         var fence = HermexAttachmentLifecycleFence()
         let first = fence.begin()

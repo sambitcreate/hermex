@@ -32,6 +32,10 @@ enum HermexAttachmentPickerPolicy {
         return selected + [id]
     }
 
+    static func visibleSelection(_ selected: [String], visibleIDs: Set<String>) -> [String] {
+        selected.filter(visibleIDs.contains)
+    }
+
     static func confirmationLabel(count: Int) -> String {
         count == 1 ? String(localized: "Add 1 Photo") : String(localized: "Add \(count) Photos")
     }
@@ -85,6 +89,7 @@ private final class HermexAttachmentPickerModel {
         }
         guard authorization == .authorized || authorization == .limited else {
             assets = []
+            selectedAssetIDs = []
             hasLimitedAccess = false
             libraryStatus = .denied
             return
@@ -98,6 +103,10 @@ private final class HermexAttachmentPickerModel {
         var loaded: [PHAsset] = []
         loaded.reserveCapacity(result.count)
         result.enumerateObjects { asset, _, _ in loaded.append(asset) }
+        selectedAssetIDs = HermexAttachmentPickerPolicy.visibleSelection(
+            selectedAssetIDs,
+            visibleIDs: Set(loaded.map(\.localIdentifier))
+        )
         assets = loaded
         libraryStatus = loaded.isEmpty ? .empty : .ready(limited: authorization == .limited)
     }
@@ -404,18 +413,17 @@ struct HermexAttachmentPickerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(isBusy)
-                .accessibilityHidden(true)
+                .accessibilityLabel("Close attachment picker")
 
                 panel(size: layout.panelSize)
                     .padding(.leading, layout.leadingPadding)
                     .padding(.bottom, layout.bottomPadding)
-                    .transition(.scale(scale: 0.06, anchor: .bottomLeading).combined(with: .opacity))
             }
         }
         .presentationBackground(.clear)
         .interactiveDismissDisabled(isBusy)
         .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape, dismissPicker)
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 cancelPreparation()
@@ -533,7 +541,7 @@ struct HermexAttachmentPickerView: View {
                     .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: confirmLabel)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.selectionCount == 0 || model.isPreparing)
+                .disabled(model.selectionCount == 0 || model.isPreparing || model.libraryStatus == .loading)
             }
             .padding(.horizontal, 25)
             .padding(.bottom, 25)
@@ -706,6 +714,7 @@ struct HermexAttachmentPickerView: View {
     }
 
     private func addSelection() {
+        guard case .ready = model.libraryStatus else { return }
         startPreparation {
             try await model.prepareSelection()
         }
@@ -748,7 +757,7 @@ struct HermexAttachmentPickerView: View {
     }
 
     private func dismissPicker() {
-        guard !isBusy else { return }
+        cancelPreparation()
         dismiss()
     }
 
