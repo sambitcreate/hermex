@@ -515,6 +515,9 @@ struct HermexAttachmentPickerView: View {
     @State private var preparationTask: Task<Void, Never>?
     @State private var preparationFence = HermexAttachmentLifecycleFence()
     @State private var activePreparationID: UUID?
+    @State private var transitionTask: Task<Void, Never>?
+    @State private var isVisible = false
+    @State private var isDismissing = false
 
     let imageCapacity: Int
     let onChooseFiles: () -> Void
@@ -526,22 +529,28 @@ struct HermexAttachmentPickerView: View {
             let layout = HermexAttachmentPickerLayout.resolve(containerSize: proxy.size, mode: mode)
             ZStack(alignment: .bottomLeading) {
                 Button(action: dismissPicker) {
-                    Color.black.opacity(mode == .menu ? 0.08 : 0.2)
+                    Color.black.opacity(isVisible ? (mode == .menu ? 0.08 : 0.2) : 0)
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(isDismissing)
                 .accessibilityLabel("Close attachment picker")
 
                 panel(size: layout.panelSize)
                     .padding(.leading, layout.leadingPadding)
                     .padding(.bottom, layout.bottomPadding)
+                    .opacity(isVisible ? 1 : 0)
+                    .scaleEffect(isVisible ? 1 : 0.96, anchor: .bottomLeading)
+                    .offset(y: isVisible ? 0 : 8)
+                    .allowsHitTesting(!isDismissing)
             }
         }
         .presentationBackground(.clear)
-        .interactiveDismissDisabled(isBusy)
+        .interactiveDismissDisabled(isBusy || isDismissing)
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape, dismissPicker)
+        .onAppear(perform: presentPicker)
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 cancelPreparation()
@@ -549,7 +558,7 @@ struct HermexAttachmentPickerView: View {
                 Task { await model.loadLibrary() }
             }
         }
-        .onDisappear(perform: cancelPreparation)
+        .onDisappear(perform: cancelLifecycle)
         .alert("Couldn’t add media", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -808,13 +817,13 @@ struct HermexAttachmentPickerView: View {
     }
 
     private var imageChoicesAreEnabled: Bool {
-        !isBusy && imageCapacity > 0
+        !isBusy && !isDismissing && imageCapacity > 0
     }
 
     private func chooseFiles() {
-        guard !isBusy else { return }
+        guard !isBusy, !isDismissing else { return }
         onChooseFiles()
-        onDismiss()
+        animateDismissal()
     }
 
     private func backToMenu() {
@@ -858,7 +867,7 @@ struct HermexAttachmentPickerView: View {
                 guard preparationFence.consume(operationID) else { return }
                 guard !media.isEmpty else { return }
                 onAdd(media)
-                onDismiss()
+                animateDismissal()
             } catch is CancellationError {
                 return
             } catch {
@@ -874,9 +883,50 @@ struct HermexAttachmentPickerView: View {
         preparationTask = nil
     }
 
+    private func cancelLifecycle() {
+        cancelPreparation()
+        transitionTask?.cancel()
+        transitionTask = nil
+    }
+
+    private func presentPicker() {
+        guard !isVisible else { return }
+        guard !reduceMotion else {
+            isVisible = true
+            return
+        }
+        transitionTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            withAnimation(.snappy(duration: 0.2)) {
+                isVisible = true
+            }
+            transitionTask = nil
+        }
+    }
+
+    private func animateDismissal() {
+        guard !isDismissing else { return }
+        isDismissing = true
+        transitionTask?.cancel()
+
+        guard !reduceMotion else {
+            onDismiss()
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.16)) {
+            isVisible = false
+        }
+        transitionTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(160)) } catch { return }
+            guard !Task.isCancelled else { return }
+            onDismiss()
+        }
+    }
+
     private func dismissPicker() {
         cancelPreparation()
-        onDismiss()
+        animateDismissal()
     }
 
     private func photoAccessibilityLabel(for asset: PHAsset) -> String {
