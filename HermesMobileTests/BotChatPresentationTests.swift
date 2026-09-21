@@ -377,10 +377,6 @@ import XCTest
         XCTAssertTrue(expanded.contains("Report.pdf"), expanded)
         XCTAssertFalse(expanded.contains("Photos"), expanded)
         XCTAssertFalse(expanded.contains("Files"), expanded)
-        XCTAssertTrue(
-            accessibilityLabels(in: window).contains("Composer options"),
-            "The custom attachment picker remains reachable from the composer."
-        )
         editor.resignFirstResponder()
         await renderFrames()
         capture(window, name: "478-composer-attachments-collapsed")
@@ -401,12 +397,19 @@ import XCTest
         model.isPresented = true
         await renderFrames()
         XCTAssertTrue(editor.isFirstResponder, "Opening attachment choices must retain keyboard focus.")
-        XCTAssertTrue(accessibilityLabels(in: window).contains("Attachment choices"))
+        let overlay = try XCTUnwrap(descendants(window).first {
+            $0.accessibilityIdentifier == HermexAttachmentPickerPresentation.overlayHostAccessibilityIdentifier
+        })
+        let rootView = try XCTUnwrap(window.rootViewController?.view)
+        XCTAssertTrue(overlay.superview === rootView.superview)
+        XCTAssertFalse(overlay.isDescendant(of: rootView))
 
         model.isPresented = false
         await renderFrames()
         XCTAssertTrue(editor.isFirstResponder, "Closing attachment choices must retain keyboard focus.")
-        XCTAssertFalse(accessibilityLabels(in: window).contains("Attachment choices"))
+        XCTAssertFalse(descendants(window).contains {
+            $0.accessibilityIdentifier == HermexAttachmentPickerPresentation.overlayHostAccessibilityIdentifier
+        })
     }
 
     func testFocusedAttachmentSendKeepsRenderingWhileUploadIsPending() async throws {

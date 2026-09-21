@@ -384,6 +384,10 @@ private struct HermexAttachmentPickerLayout {
 /// Hosts the picker inside the app's existing window instead of presenting a
 /// new controller. Its bottom follows the keyboard, so the composer remains
 /// first responder and the picker always occupies the space above it.
+enum HermexAttachmentPickerPresentation {
+    static let overlayHostAccessibilityIdentifier = "HermexAttachmentPickerOverlay"
+}
+
 struct HermexKeyboardRetainingOverlay<Overlay: View>: UIViewControllerRepresentable {
     let isPresented: Bool
     private let overlay: () -> Overlay
@@ -454,13 +458,17 @@ struct HermexKeyboardRetainingOverlay<Overlay: View>: UIViewControllerRepresenta
         }
 
         private func attach(to root: UIViewController) {
+            guard let container = root.view.superview ?? root.view.window else { return }
+
             let host = UIHostingController(rootView: latestOverlay)
             host.view.backgroundColor = .clear
             host.view.translatesAutoresizingMaskIntoConstraints = false
             host.view.accessibilityViewIsModal = true
+            host.view.accessibilityIdentifier = HermexAttachmentPickerPresentation.overlayHostAccessibilityIdentifier
 
-            root.addChild(host)
-            root.view.addSubview(host.view)
+            // UIHostingController's root view does not support UIKit subviews.
+            // Install the overlay beside it in their common container instead.
+            container.addSubview(host.view)
             root.view.keyboardLayoutGuide.followsUndockedKeyboard = true
             NSLayoutConstraint.activate([
                 host.view.topAnchor.constraint(equalTo: root.view.topAnchor),
@@ -468,16 +476,12 @@ struct HermexKeyboardRetainingOverlay<Overlay: View>: UIViewControllerRepresenta
                 host.view.trailingAnchor.constraint(equalTo: root.view.trailingAnchor),
                 host.view.bottomAnchor.constraint(equalTo: root.view.keyboardLayoutGuide.topAnchor)
             ])
-            host.didMove(toParent: root)
-
             self.host = host
         }
 
         func removeOverlay() {
             guard let host else { return }
-            host.willMove(toParent: nil)
             host.view.removeFromSuperview()
-            host.removeFromParent()
             self.host = nil
         }
 
