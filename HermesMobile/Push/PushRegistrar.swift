@@ -28,6 +28,8 @@ import UIKit
     /// reached. Removing a connection or a whole server may not depend on the network.
     func forget(for server: URL) async
     func pairing(for server: URL) -> PushPairing?
+    func finishPendingRegistrations() async
+    func updatePreferences(_ preferences: PushPreferences, for server: URL, expectedPairing: PushPairing) async throws
 }
 
 enum PushRegistrarError: Error, Equatable {
@@ -38,6 +40,7 @@ enum PushRegistrarError: Error, Equatable {
     /// APNs never came back with a token. Almost always no network.
     case tokenUnavailable
     case malformedPairing
+    case pairingChanged
 }
 
 /// Owns this device's APNs registration across every paired server.
@@ -70,6 +73,9 @@ enum PushRegistrarError: Error, Equatable {
         self?.pairing(for: server)
     })
 
+    // Preference writes and token refreshes share a queue: a delayed refresh must
+    // never replace a newly accepted choice with an older snapshot.
+    private var registrationTail: Task<Void, Never>?
     private var currentToken: String?
     private var pendingLaunchRefresh = false
     private var tokenWaiters: [CheckedContinuation<String, any Error>] = []
@@ -169,6 +175,40 @@ enum PushRegistrarError: Error, Equatable {
         try? store.pairing(for: server)
     }
 
+    /// Finishes an accepted preference transaction even if its screen closes. Only
+    /// the screen's state update is cancelled; relay and Keychain must agree.
+    func updatePreferences(_ preferences: PushPreferences, for server: URL, expectedPairing: PushPairing) async throws {
+        let previous = registrationTail
+        let task = Task { [self] in
+            await previous?.value
+            guard let identity else { throw PushRegistrarError.unsupportedBuild }
+            guard let original = try store.pairing(for: server),
+                  sameInstall(original, expectedPairing), let token = original.registeredToken
+            else { throw PushRegistrarError.pairingChanged }
+            var updated = original
+            updated.preferences = preferences
+            try await relay.registerDevice(token: token, identity: identity, pairing: updated)
+            guard isStillPaired(original, for: server) else {
+                try? await relay.deleteDevice(token: token, pairing: original)
+                throw PushRegistrarError.pairingChanged
+            }
+            do {
+                try store.save(updated, for: server)
+            } catch {
+                // A failed local commit restores the previously confirmed relay
+                // preferences. Launch refresh retries that value if rollback fails.
+                try? await relay.registerDevice(token: token, identity: identity, pairing: original)
+                if !isStillPaired(original, for: server) {
+                    try? await relay.deleteDevice(token: token, pairing: original)
+                }
+                throw error
+            }
+            await activities.refresh()
+        }
+        registrationTail = Task { _ = await task.result }
+        try await task.value
+    }
+
     /// Called once at launch. Only a server that already paired gets a token
     /// request; the rest of the work happens when the token arrives.
     func refreshOnLaunch() {
@@ -193,7 +233,11 @@ enum PushRegistrarError: Error, Equatable {
         // first token minted for an in-flight `enable` needs neither — that call
         // registers its own pairing, and no other pairing's token changed.
         guard isLaunchRefresh || (previous != nil && previous != token) else { return }
-        Task { await self.reregisterAllPairings(token: token) }
+        let previousRefresh = registrationTail
+        registrationTail = Task {
+            await previousRefresh?.value
+            await self.reregisterAllPairings(token: token)
+        }
     }
 
     func didFailToRegisterForRemoteNotifications(error: any Error) {
@@ -209,10 +253,9 @@ enum PushRegistrarError: Error, Equatable {
     /// over a transient network error.
     private func reregisterAllPairings(token: String) async {
         guard let identity, let pairings = try? store.allPairings() else { return }
-        for (server, pairing) in pairings {
-            // The user can disable a server at any suspension point below, so the
-            // snapshot is only a starting list: what is on disk right now decides.
-            guard isStillPaired(pairing, for: server) else { continue }
+        for server in pairings.keys {
+            // Read after earlier writes finish, rather than restoring stale preferences.
+            guard let pairing = try? store.pairing(for: server) else { continue }
             do {
                 try await relay.registerDevice(token: token, identity: identity, pairing: pairing)
                 guard isStillPaired(pairing, for: server) else {
@@ -242,7 +285,17 @@ enum PushRegistrarError: Error, Equatable {
     /// disable in the meantime removes it, and a re-pair mints a new install key;
     /// either way the snapshot must not be written back over the user's choice.
     private func isStillPaired(_ pairing: PushPairing, for server: URL) -> Bool {
-        (try? store.pairing(for: server))?.installKey == pairing.installKey
+        guard let stored = try? store.pairing(for: server) else { return false }
+        return sameInstall(stored, pairing)
+    }
+
+    private func sameInstall(_ lhs: PushPairing, _ rhs: PushPairing) -> Bool {
+        lhs.installKey == rhs.installKey && lhs.relayURL == rhs.relayURL && lhs.previewKey == rhs.previewKey
+    }
+
+    /// Waits for queued device writes, also used by deterministic registration tests.
+    func finishPendingRegistrations() async {
+        await registrationTail?.value
     }
 
     /// The token arrives through the app delegate, not from a call, so a first
@@ -300,7 +353,7 @@ extension PushRegistrar: PushPairingEnabling {}
 
     func isRegistered(_ owner: String) -> Bool {
         guard let record = registered[owner], record.confirmed, desired[owner] == record.desired else { return false }
-        return pairing(record.desired.server) == record.pairing
+        return pairing(record.desired.server)?.hasSameRegistration(as: record.pairing) == true
     }
 
     func register(owner: String, server: URL, sessionID: String, token: String) async {
@@ -354,7 +407,7 @@ extension PushRegistrar: PushPairingEnabling {}
             }
         }
         if let old = registered[owner] {
-            if desired[owner] == old.desired, pairing(old.desired.server) == old.pairing {
+            if desired[owner] == old.desired, pairing(old.desired.server)?.hasSameRegistration(as: old.pairing) == true {
                 guard republish || !old.confirmed else { return }
                 registered[owner]?.confirmed = false
             } else {
@@ -368,7 +421,7 @@ extension PushRegistrar: PushPairingEnabling {}
         do {
             try await relay.registerActivity(token: next.token, sessionID: next.sessionID, deviceToken: device, pairing: keys)
             registered[owner] = Registered(desired: next, pairing: keys, deviceToken: device)
-            if desired[owner] != next || pairing(next.server) != keys {
+            if desired[owner] != next || pairing(next.server)?.hasSameRegistration(as: keys) != true {
                 // No later queued PUT can run until this stale registration is removed.
                 try await relay.deleteActivity(sessionID: next.sessionID, deviceToken: device, pairing: keys)
                 registered[owner] = nil

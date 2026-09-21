@@ -37,7 +37,6 @@ import SwiftUI
             } footer: {
                 if let note = saved?.untestedVersionNote { Text(note) }
             }
-            if let saved { HermexPushSectionView(server: server, connection: saved).id(saved.id) }
             Section("Setup in Hermes Desktop") {
                 Text("Keep Hermes Desktop running. In Settings → Advanced, enable Keep computer awake. The display may dim.")
                 Text("In Settings → Plugins, enable Bots for the intended Profile. Applies to selects the Profile configuration being edited.")

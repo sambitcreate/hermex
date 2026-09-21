@@ -25,7 +25,7 @@ import Foundation
     /// A step that did not finish, in the step's own words, so the user knows what to retry.
     struct Failure: Equatable { let title: String; let message: String }
 
-    enum Phase: Equatable { case idle, enabling(Step), disabling, failed(Failure) }
+    enum Phase: Equatable { case idle, enabling(Step), disabling, savingPreferences, refreshing, failed(Failure) }
 
     let server: URL
     private(set) var pairing: PushPairing?
@@ -66,7 +66,7 @@ import Foundation
 
     var isWorking: Bool {
         switch phase {
-        case .enabling, .disabling: return true
+        case .enabling, .disabling, .savingPreferences, .refreshing: return true
         case .idle, .failed: return false
         }
     }
@@ -74,6 +74,39 @@ import Foundation
     var failure: Failure? { if case .failed(let failure) = phase { return failure }; return nil }
 
     func isRunning(_ step: Step) -> Bool { phase == .enabling(step) }
+
+    /// Re-reads local state when Settings returns from editing the connection.
+    func reload() async {
+        guard !isWorking else { return }
+        phase = .refreshing
+        await registrar?.finishPendingRegistrations()
+        guard !Task.isCancelled else { return }
+        connection = try? BotConnectionStore().load(server: server)
+        pairing = registrar?.pairing(for: server)
+        phase = .idle
+    }
+
+    func updatePreferences(_ preferences: PushPreferences) async {
+        guard !isWorking, let expected = pairing, let registrar else { return }
+        phase = .savingPreferences
+        do {
+            try await registrar.updatePreferences(preferences, for: server, expectedPairing: expected)
+            guard !Task.isCancelled else { return }
+            pairing = registrar.pairing(for: server)
+            phase = .idle
+        } catch {
+            guard !Task.isCancelled else { return }
+            pairing = registrar.pairing(for: server)
+            phase = .failed(Failure(title: String(localized: "Couldn’t save preferences"),
+                                    message: String(localized: "Try again.")))
+        }
+    }
+
+    /// The view cancels only its presentation of a preference write. The registrar
+    /// owns completing the durable transaction after this screen goes away.
+    func leaveSettings() {
+        if phase == .savingPreferences || phase == .refreshing { phase = .idle }
+    }
 
     /// The whole setup. A host that already answers the pairing route has its relay set
     /// and the plugin loaded, so it is paired as it stands: no install, and no restart
@@ -224,7 +257,7 @@ import Foundation
         case let failure as HermexPushFailure:
             return failure.errorDescription ?? String(localized: "This step did not finish. Try again.")
         case BotFailure.rejected(401), BotFailure.rejected(403):
-            return String(localized: "This Hermes host rejected the saved sign-in. Reconnect above, then try again.")
+            return String(localized: "This Hermes host rejected the saved sign-in. Update the Hermes connection, then try again.")
         case BotFailure.rejected(let status):
             return String(localized: "This Hermes host refused the step (HTTP \(status)). Check the host’s logs, then try again.")
         case BotFailure.transport, is URLError:

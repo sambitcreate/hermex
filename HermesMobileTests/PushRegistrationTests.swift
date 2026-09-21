@@ -45,6 +45,135 @@ final class PushRegistrationTests: XCTestCase {
                        "The last pairing gone means this phone stops minting tokens")
     }
 
+    func testOlderPairingsAndPartialPreferencesKeepRelayDefaults() throws {
+        let original = Harness().pairing(install: installA, registeredToken: "abcd")
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(PushPairing.self, from: encoded)
+        XCTAssertNil(decoded.preferences)
+        XCTAssertEqual(decoded.effectivePreferences, PushPreferences())
+        let partial = try JSONDecoder().decode(PushPreferences.self, from: Data(#"{"previews":false,"future":true}"#.utf8))
+        XCTAssertEqual(partial, PushPreferences(previews: false))
+    }
+
+    func testPreferencesPersistForOnlyTheirServerAndSurviveRefreshAndRotation() async throws {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = original
+        harness.store.pairings[serverB] = harness.pairing(install: installB, registeredToken: "abcd")
+        let choices = PushPreferences(replies: false, muteSubagents: false, previews: false)
+        try await harness.registrar.updatePreferences(choices, for: serverA, expectedPairing: original)
+        let stored = try XCTUnwrap(harness.store.pairings[serverA])
+        XCTAssertEqual(try JSONDecoder().decode(PushPairing.self, from: JSONEncoder().encode(stored)).effectivePreferences, choices)
+        XCTAssertEqual(harness.store.pairings[serverB]?.effectivePreferences, PushPreferences())
+        harness.registrar.refreshOnLaunch()
+        await harness.deliverToken("abcd")
+        await harness.deliverToken("1234")
+        XCTAssertTrue(harness.relay.registrations.filter { $0.installKey == installA }.allSatisfy { $0.preferences == choices })
+        XCTAssertTrue(harness.relay.registrations.filter { $0.installKey == installB }.allSatisfy { $0.preferences == PushPreferences() })
+        XCTAssertEqual(harness.store.pairings[serverA]?.registeredToken, "1234")
+    }
+
+    func testPreferenceFailureKeepsTheConfirmedValuesAndCanRetry() async throws {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = original
+        harness.relay.registerError = PushRelayError.transport
+        await XCTAssertThrowsErrorAsync(
+            try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original),
+            PushRelayError.transport)
+        XCTAssertEqual(harness.store.pairings[serverA], original)
+        harness.relay.registerError = nil
+        try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original)
+        XCTAssertEqual(harness.store.pairings[serverA]?.effectivePreferences.previews, false)
+    }
+
+    func testPreferenceKeychainFailureRestoresRelayChoices() async {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = original
+        harness.store.saveError = PushRelayError.transport
+        await XCTAssertThrowsErrorAsync(
+            try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original),
+            PushRelayError.transport)
+        XCTAssertEqual(harness.store.pairings[serverA], original)
+        XCTAssertEqual(harness.relay.registrations.map(\.preferences), [PushPreferences(previews: false), PushPreferences()])
+    }
+
+    func testDisableWhilePreferencesSaveCannotRestoreThePairing() async {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = original
+        harness.relay.duringRegister = { [serverA] in try? await harness.registrar.disable(for: serverA) }
+        await XCTAssertThrowsErrorAsync(
+            try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original),
+            PushRegistrarError.pairingChanged)
+        XCTAssertNil(harness.store.pairings[serverA])
+        XCTAssertEqual(harness.relay.deletions.map(\.token), ["abcd", "abcd"])
+    }
+
+    func testOldSettingsCannotChangeAReplacementPairing() async {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = harness.pairing(install: installB, registeredToken: "abcd")
+        await XCTAssertThrowsErrorAsync(
+            try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original),
+            PushRegistrarError.pairingChanged)
+        XCTAssertTrue(harness.relay.registrations.isEmpty)
+    }
+
+    func testRefreshQueuedDuringPreferenceSaveUsesConfirmedChoices() async throws {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = original
+        let entered = expectation(description: "preference request entered")
+        var release: CheckedContinuation<Void, Never>?
+        harness.relay.duringRegister = {
+            await withCheckedContinuation { release = $0; entered.fulfill() }
+        }
+        let saving = Task { try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original) }
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertEqual(harness.store.pairings[serverA], original, "Never claim success before the relay accepts")
+        harness.registrar.refreshOnLaunch()
+        harness.registrar.didRegisterForRemoteNotifications(deviceToken: Data(hex: "1234"))
+        release?.resume()
+        try await saving.value
+        await harness.registrar.finishPendingRegistrations()
+        XCTAssertEqual(harness.relay.registrations.map(\.preferences.previews), [false, false])
+        XCTAssertEqual(harness.store.pairings[serverA]?.registeredToken, "1234")
+        XCTAssertEqual(harness.store.pairings[serverA]?.effectivePreferences.previews, false)
+    }
+
+    func testPreferenceSaveQueuedDuringRefreshUsesRotatedToken() async throws {
+        let harness = Harness()
+        let original = harness.pairing(install: installA, registeredToken: "abcd")
+        harness.store.pairings[serverA] = original
+        let entered = expectation(description: "refresh request entered")
+        var release: CheckedContinuation<Void, Never>?
+        harness.relay.duringRegister = {
+            await withCheckedContinuation { release = $0; entered.fulfill() }
+        }
+        harness.registrar.refreshOnLaunch()
+        harness.registrar.didRegisterForRemoteNotifications(deviceToken: Data(hex: "1234"))
+        await fulfillment(of: [entered], timeout: 2)
+        let saving = Task { try await harness.registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original) }
+        release?.resume()
+        try await saving.value
+        XCTAssertEqual(harness.relay.registrations.map(\.token), ["1234", "1234"])
+        XCTAssertEqual(harness.relay.registrations.map(\.preferences.previews), [true, false])
+        XCTAssertEqual(harness.store.pairings[serverA]?.registeredToken, "1234")
+    }
+
+    func testPreferenceChangeDoesNotRetireALiveActivity() async {
+        let wire = ActivityRelaySpy()
+        var keys = PushPairing(relayURL: relay, installKey: installA, previewKey: "k", registeredToken: "device")
+        let registrar = PushActivityRegistrar(relay: wire, pairing: { _ in keys })
+        await registrar.register(owner: "a", server: serverA, sessionID: "runtime", token: "activity")
+        keys.preferences = PushPreferences(previews: false)
+        XCTAssertTrue(registrar.isRegistered("a"))
+        await registrar.refresh()
+        XCTAssertEqual(wire.calls.map(\.action), ["put:activity"])
+    }
+
     // MARK: - Build identity
 
     /// Branch TestFlight is a production build even though its bundle ID looks
@@ -291,7 +420,8 @@ final class PushRegistrationTests: XCTestCase {
         }
         defer { MockURLProtocol.requestHandler = nil }
 
-        let pairing = PushPairing(relayURL: relay, installKey: installA, previewKey: "k")
+        var pairing = PushPairing(relayURL: relay, installKey: installA, previewKey: "k")
+        pairing.preferences = PushPreferences(replies: false, muteSubagents: false, previews: false)
         try await client.registerDevice(
             token: "0a1b",
             identity: PushBuildIdentity(bundleID: "com.uzairansar.hermesmobile", environment: .sandbox),
@@ -305,10 +435,11 @@ final class PushRegistrationTests: XCTestCase {
         let body = try XCTUnwrap(recorded.body)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         // The relay rejects unknown fields with a 400, so the body is exactly these.
-        XCTAssertEqual(Set(json.keys), ["device_token", "bundle_id", "environment"])
+        XCTAssertEqual(Set(json.keys), ["device_token", "bundle_id", "environment", "prefs"])
         XCTAssertEqual(json["device_token"] as? String, "0a1b")
         XCTAssertEqual(json["bundle_id"] as? String, "com.uzairansar.hermesmobile")
         XCTAssertEqual(json["environment"] as? String, "sandbox")
+        XCTAssertEqual(json["prefs"] as? [String: Bool], ["replies": false, "mute_subagents": false, "previews": false])
     }
 
     func testRelayDeleteAddressesTheDeviceTokenAndSurfacesTheStatus() async {
@@ -545,7 +676,7 @@ private final class Harness {
     /// Delivers a token and lets the registrar's follow-up work finish.
     func deliverToken(_ hex: String) async {
         registrar.didRegisterForRemoteNotifications(deviceToken: Data(hex: hex))
-        await relay.settled()
+        await registrar.finishPendingRegistrations()
     }
 }
 
@@ -570,6 +701,7 @@ private final class RecordingPushRelay: PushRelayRegistering {
         let installKey: String
         let environment: PushEnvironment
         let bundleID: String
+        let preferences: PushPreferences
     }
 
     struct Deletion: Equatable {
@@ -598,7 +730,8 @@ private final class RecordingPushRelay: PushRelayRegistering {
         }
         if let registerError { throw registerError }
         registrations.append(Registration(token: token, installKey: pairing.installKey,
-                                          environment: identity.environment, bundleID: identity.bundleID))
+                                          environment: identity.environment, bundleID: identity.bundleID,
+                                          preferences: pairing.effectivePreferences))
     }
 
     func deleteDevice(token: String, pairing: PushPairing) async throws {
@@ -606,12 +739,7 @@ private final class RecordingPushRelay: PushRelayRegistering {
         deletions.append(Deletion(token: token, installKey: pairing.installKey))
     }
 
-    /// Lets the registrar's detached refresh run to completion. Each yield drains
-    /// one hop of the main-actor queue; the refresh is a bounded chain of awaits,
-    /// never a timed wait.
-    func settled() async {
-        for _ in 0..<12 { await Task.yield() }
-    }
+
 }
 
 @MainActor

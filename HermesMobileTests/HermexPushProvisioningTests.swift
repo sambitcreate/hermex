@@ -278,6 +278,75 @@ import XCTest
 
     // MARK: - Fixtures
 
+    func testSettingsShowsOnlyConfirmedPreferencesAndKeepsFailureRetryable() async throws {
+        let registrar = FakePushRegistrar()
+        let provisioner = makeProvisioner(server: serverA, registrar: registrar)
+        await provisioner.enable()
+        let original = try XCTUnwrap(provisioner.pairing)
+        let entered = expectation(description: "preferences saving")
+        var release: CheckedContinuation<Void, Never>?
+        registrar.duringPreferenceSave = {
+            await withCheckedContinuation { release = $0; entered.fulfill() }
+        }
+        let saving = Task { await provisioner.updatePreferences(PushPreferences(previews: false)) }
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertTrue(provisioner.isWorking)
+        XCTAssertEqual(provisioner.pairing, original)
+        registrar.preferenceError = PushRelayError.transport
+        release?.resume()
+        await saving.value
+        XCTAssertFalse(provisioner.isWorking)
+        XCTAssertNotNil(provisioner.failure)
+        XCTAssertEqual(provisioner.pairing, original)
+        registrar.duringPreferenceSave = nil
+        registrar.preferenceError = nil
+        await provisioner.updatePreferences(PushPreferences(previews: false))
+        XCTAssertNil(provisioner.failure)
+        XCTAssertEqual(provisioner.pairing?.effectivePreferences.previews, false)
+    }
+
+    func testCancelledSettingsSaveDoesNotPublishBackIntoTheOldScreen() async throws {
+        let registrar = FakePushRegistrar()
+        let provisioner = makeProvisioner(server: serverA, registrar: registrar)
+        await provisioner.enable()
+        let original = try XCTUnwrap(provisioner.pairing)
+        let entered = expectation(description: "preferences saving")
+        var release: CheckedContinuation<Void, Never>?
+        registrar.duringPreferenceSave = {
+            await withCheckedContinuation { release = $0; entered.fulfill() }
+        }
+        let saving = Task { await provisioner.updatePreferences(PushPreferences(previews: false)) }
+        await fulfillment(of: [entered], timeout: 2)
+        saving.cancel()
+        provisioner.leaveSettings()
+        release?.resume()
+        await saving.value
+        XCTAssertEqual(provisioner.pairing, original)
+        XCTAssertEqual(provisioner.phase, .idle)
+        XCTAssertEqual(registrar.pairing(for: serverA)?.effectivePreferences.previews, false)
+    }
+
+    func testReopeningSettingsWaitsForThePreviousPreferenceTransaction() async throws {
+        let registrar = FakePushRegistrar()
+        let provisioner = makeProvisioner(server: serverA, registrar: registrar)
+        await provisioner.enable()
+        let original = try XCTUnwrap(provisioner.pairing)
+        let waiting = expectation(description: "return waits for pending registration")
+        var release: CheckedContinuation<Void, Never>?
+        registrar.pendingRegistrations = {
+            await withCheckedContinuation { release = $0; waiting.fulfill() }
+        }
+        let reloading = Task { await provisioner.reload() }
+        await fulfillment(of: [waiting], timeout: 2)
+        XCTAssertTrue(provisioner.isWorking)
+        XCTAssertEqual(provisioner.pairing, original)
+        try await registrar.updatePreferences(PushPreferences(previews: false), for: serverA, expectedPairing: original)
+        release?.resume()
+        await reloading.value
+        XCTAssertFalse(provisioner.isWorking)
+        XCTAssertEqual(provisioner.pairing?.effectivePreferences.previews, false)
+    }
+
     private func makeProvisioner(server: URL, registrar: FakePushRegistrar,
                                  stillConnected: @escaping @MainActor () -> Bool = { true }) -> HermexPushProvisioner {
         let connection = BotConnection(id: UUID(), name: "Host", address: URL(string: "https://a.example.com")!,
@@ -319,6 +388,17 @@ import XCTest
     func forget(for server: URL) async {
         actions.append("forget \(server.host ?? server.absoluteString)")
         pairings[server] = nil
+    }
+
+    var pendingRegistrations: (() async -> Void)?
+    func finishPendingRegistrations() async { await pendingRegistrations?() }
+
+    var preferenceError: (any Error)?
+    var duringPreferenceSave: (() async -> Void)?
+    func updatePreferences(_ preferences: PushPreferences, for server: URL, expectedPairing: PushPairing) async throws {
+        await duringPreferenceSave?()
+        if let preferenceError { throw preferenceError }
+        pairings[server]?.preferences = preferences
     }
 
     func pairing(for server: URL) -> PushPairing? { pairings[server] }
