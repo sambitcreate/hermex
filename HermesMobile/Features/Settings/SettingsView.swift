@@ -175,15 +175,25 @@ struct SettingsView: View {
 
                     SettingsDivider()
 
-                    SettingsToggleRow(
-                        title: String(localized: "Response Complete Alerts"),
-                        systemImage: "bell",
-                        isOn: responseCompletionNotificationBinding
-                    )
-
-                    if let notificationStatusText {
-                        SettingsFootnote(notificationStatusText)
+                    HermexPushSectionView(server: server) {
+                        SettingsToggleRow(
+                            title: String(localized: "Response Complete Alerts"),
+                            systemImage: "bell",
+                            isOn: responseCompletionNotificationBinding
+                        )
+                        SettingsFootnote(String(localized: "Local completion alerts for servers without push notifications."))
+                        if let notificationStatusText {
+                            SettingsFootnote(notificationStatusText)
+                        }
+                        SettingsDivider()
+                        SettingsToggleRow(
+                            title: String(localized: "Live Activity Excerpts"),
+                            systemImage: "lock",
+                            isOn: $showsLiveActivityResponseExcerpts
+                        )
+                        SettingsFootnote(String(localized: "Shows short response text on the Lock Screen and Dynamic Island."))
                     }
+                    .id(server)
 
                     SettingsDivider()
 
@@ -304,16 +314,6 @@ struct SettingsView: View {
                     )
 
                     SettingsFootnote(String(localized: "Hides the appended file-path line in your sent messages. Attachments still appear as previews, and the server still receives the paths."))
-
-                    SettingsDivider()
-
-                    SettingsToggleRow(
-                        title: String(localized: "Live Activity Excerpts"),
-                        systemImage: "lock",
-                        isOn: $showsLiveActivityResponseExcerpts
-                    )
-
-                    SettingsFootnote(String(localized: "Shows short response text on the Lock Screen and Dynamic Island."))
 
                     SettingsDivider()
 

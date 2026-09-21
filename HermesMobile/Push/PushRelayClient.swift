@@ -43,10 +43,11 @@ enum PushRelayError: Error, Equatable {
         var request = URLRequest(url: try Self.devicesURL(pairing: pairing))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // The relay rejects unknown fields outright, so this body carries exactly
-        // the three required keys. Device preferences are a later slice (#562).
+        // The relay replaces preferences on registration, including launch refresh
+        // and token rotation, so always send this server's confirmed choices.
         request.httpBody = try JSONEncoder().encode(
-            DeviceRegistration(deviceToken: token, bundleID: identity.bundleID, environment: identity.environment)
+            DeviceRegistration(deviceToken: token, bundleID: identity.bundleID, environment: identity.environment,
+                               prefs: pairing.effectivePreferences)
         )
         try await send(request, describedAs: "register")
     }
@@ -109,11 +110,12 @@ enum PushRelayError: Error, Equatable {
         let deviceToken: String
         let bundleID: String
         let environment: PushEnvironment
+        let prefs: PushPreferences
 
         enum CodingKeys: String, CodingKey {
             case deviceToken = "device_token"
             case bundleID = "bundle_id"
-            case environment
+            case environment, prefs
         }
     }
 }

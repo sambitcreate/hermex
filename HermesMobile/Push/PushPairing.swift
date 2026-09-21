@@ -19,6 +19,13 @@ struct PushPairing: Codable, Equatable, Sendable {
     /// Nil until the first successful registration. Keeping it lets a rotation
     /// delete the stale token at the relay instead of leaking a dead device.
     var registeredToken: String?
+    /// Optional on disk so pairings saved before preferences keep the relay defaults.
+    var preferences: PushPreferences?
+    /// Written before a remote preference change and cleared only after both
+    /// sides agree. A crash or failed rollback must not turn old values into a
+    /// false confirmation when Settings reopens.
+    var preferencesNeedSync: Bool?
+    var effectivePreferences: PushPreferences { preferences ?? PushPreferences() }
 
     init(relayURL: URL, installKey: String, previewKey: String, registeredToken: String? = nil) {
         self.relayURL = relayURL
@@ -33,7 +40,37 @@ struct PushPairing: Codable, Equatable, Sendable {
         installKey.count == 64 && installKey.allSatisfy { Self.lowercaseHex.contains($0) }
     }
 
+    func hasSameRegistration(as other: PushPairing) -> Bool {
+        relayURL == other.relayURL && installKey == other.installKey
+            && previewKey == other.previewKey && registeredToken == other.registeredToken
+    }
+
     private static let lowercaseHex = Set("0123456789abcdef")
+}
+
+/// Device choices sent as `prefs` to the relay. Missing fields preserve its defaults.
+struct PushPreferences: Codable, Equatable, Sendable {
+    var replies = true
+    var muteSubagents = true
+    var previews = true
+
+    init(replies: Bool = true, muteSubagents: Bool = true, previews: Bool = true) {
+        self.replies = replies
+        self.muteSubagents = muteSubagents
+        self.previews = previews
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case replies, previews
+        case muteSubagents = "mute_subagents"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        replies = try values.decodeIfPresent(Bool.self, forKey: .replies) ?? true
+        muteSubagents = try values.decodeIfPresent(Bool.self, forKey: .muteSubagents) ?? true
+        previews = try values.decodeIfPresent(Bool.self, forKey: .previews) ?? true
+    }
 }
 
 /// Reads and writes pairings, one per configured server.
