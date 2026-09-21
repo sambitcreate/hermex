@@ -26,26 +26,32 @@ struct BotAttachmentPickerPresentation: ViewModifier {
                 else if case .failure(let error) = result,
                         (error as NSError).code != NSUserCancelledError { model.attachments.report(error) }
             }
-            .fullScreenCover(isPresented: presentsMedia, onDismiss: {
-                guard presentFilesAfterMediaPickerDismisses else { return }
+            .background {
+                HermexKeyboardRetainingOverlay(isPresented: presentsMedia.wrappedValue) {
+                    HermexAttachmentPickerView(
+                        imageCapacity: HermexAttachmentPickerPolicy.availableCapacity(
+                            existingCount: model.attachments.items.count
+                        ),
+                        onChooseFiles: {
+                            presentFilesAfterMediaPickerDismisses = true
+                        },
+                        onAdd: { media in
+                            BotAttachmentPaste.media(media, model: model)
+                        },
+                        onDismiss: {
+                            picker = nil
+                        }
+                    )
+                }
+                .frame(width: 0, height: 0)
+            }
+            .onChange(of: presentsMedia.wrappedValue) { _, isPresented in
+                guard !isPresented, presentFilesAfterMediaPickerDismisses else { return }
                 presentFilesAfterMediaPickerDismisses = false
                 guard model.mayImportAttachments,
                       model.attachments.items.count < HermexAttachmentPickerPolicy.maximumBotAttachments
                 else { return }
                 picker = .files
-            }) {
-                HermexAttachmentPickerView(
-                    imageCapacity: HermexAttachmentPickerPolicy.availableCapacity(
-                        existingCount: model.attachments.items.count
-                    ),
-                    onChooseFiles: {
-                        presentFilesAfterMediaPickerDismisses = true
-                    },
-                    onAdd: { media in
-                        picker = nil
-                        BotAttachmentPaste.media(media, model: model)
-                    }
-                )
             }
     }
 

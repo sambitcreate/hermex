@@ -332,6 +332,15 @@ enum HermexAttachmentImageProcessor {
     }
 }
 
+enum HermexAttachmentPickerLayoutMetrics {
+    static let menuMaximumWidth: CGFloat = 280
+    static let menuLeadingPadding: CGFloat = 12
+
+    static func menuWidth(containerWidth: CGFloat) -> CGFloat {
+        min(menuMaximumWidth, max(1, containerWidth - (menuLeadingPadding * 2)))
+    }
+}
+
 private struct HermexAttachmentPickerLayout {
     static let photoColumnCount = 3
     static let photoGridSpacing: CGFloat = 1.5
@@ -349,8 +358,10 @@ private struct HermexAttachmentPickerLayout {
         let edgePadding: CGFloat = expanded && width >= 700 ? 28 : 12
         let panelWidth = expanded
             ? min(expandedMaximumWidth, max(1, width - (edgePadding * 2)))
-            : min(320, max(1, width - 52))
-        let leadingPadding = expanded ? (width - panelWidth) / 2 : 40
+            : HermexAttachmentPickerLayoutMetrics.menuWidth(containerWidth: width)
+        let leadingPadding = expanded
+            ? (width - panelWidth) / 2
+            : HermexAttachmentPickerLayoutMetrics.menuLeadingPadding
         let bottomPadding: CGFloat = expanded ? (width >= 700 ? 18 : 8) : 74
         let availableHeight = max(1, height - bottomPadding - 12)
         let preferredExpandedHeight = max(460, height * 0.66)
@@ -367,6 +378,113 @@ private struct HermexAttachmentPickerLayout {
     static func photoCellSide(panelWidth: CGFloat) -> CGFloat {
         let spacing = photoGridSpacing * CGFloat(photoColumnCount - 1)
         return max(1, floor((panelWidth - spacing) / CGFloat(photoColumnCount)))
+    }
+}
+
+/// Hosts the picker inside the app's existing window instead of presenting a
+/// new controller. Its bottom follows the keyboard, so the composer remains
+/// first responder and the picker always occupies the space above it.
+struct HermexKeyboardRetainingOverlay<Overlay: View>: UIViewControllerRepresentable {
+    let isPresented: Bool
+    private let overlay: () -> Overlay
+
+    init(isPresented: Bool, @ViewBuilder overlay: @escaping () -> Overlay) {
+        self.isPresented = isPresented
+        self.overlay = overlay
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = UIViewController()
+        controller.view.backgroundColor = .clear
+        controller.view.isUserInteractionEnabled = false
+        return controller
+    }
+
+    func updateUIViewController(_ controller: UIViewController, context: Context) {
+        context.coordinator.update(
+            isPresented: isPresented,
+            anchor: controller,
+            overlay: AnyView(overlay())
+        )
+    }
+
+    static func dismantleUIViewController(_ controller: UIViewController, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    @MainActor final class Coordinator {
+        private var host: UIHostingController<AnyView>?
+        private var wantsPresentation = false
+        private var latestOverlay = AnyView(EmptyView())
+
+        func update(isPresented: Bool, anchor: UIViewController, overlay: AnyView) {
+            wantsPresentation = isPresented
+            latestOverlay = overlay
+
+            guard isPresented else {
+                removeOverlay()
+                return
+            }
+
+            if let host {
+                host.rootView = overlay
+                return
+            }
+
+            guard let root = anchor.view.window?.rootViewController else {
+                DispatchQueue.main.async { [weak self, weak anchor] in
+                    guard let self, let anchor, self.wantsPresentation else { return }
+                    self.attachIfPossible(to: anchor)
+                }
+                return
+            }
+            attach(to: root)
+        }
+
+        private func attachIfPossible(to anchor: UIViewController) {
+            guard host == nil,
+                  wantsPresentation,
+                  let root = anchor.view.window?.rootViewController
+            else { return }
+            attach(to: root)
+        }
+
+        private func attach(to root: UIViewController) {
+            let host = UIHostingController(rootView: latestOverlay)
+            host.view.backgroundColor = .clear
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            host.view.accessibilityViewIsModal = true
+
+            root.addChild(host)
+            root.view.addSubview(host.view)
+            root.view.keyboardLayoutGuide.followsUndockedKeyboard = true
+            NSLayoutConstraint.activate([
+                host.view.topAnchor.constraint(equalTo: root.view.topAnchor),
+                host.view.leadingAnchor.constraint(equalTo: root.view.leadingAnchor),
+                host.view.trailingAnchor.constraint(equalTo: root.view.trailingAnchor),
+                host.view.bottomAnchor.constraint(equalTo: root.view.keyboardLayoutGuide.topAnchor)
+            ])
+            host.didMove(toParent: root)
+
+            self.host = host
+        }
+
+        func removeOverlay() {
+            guard let host else { return }
+            host.willMove(toParent: nil)
+            host.view.removeFromSuperview()
+            host.removeFromParent()
+            self.host = nil
+        }
+
+        func stop() {
+            wantsPresentation = false
+            removeOverlay()
+        }
     }
 }
 
@@ -388,7 +506,6 @@ private struct HermexAttachmentPanelSurface: ViewModifier {
 }
 
 struct HermexAttachmentPickerView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.scenePhase) private var scenePhase
@@ -402,6 +519,7 @@ struct HermexAttachmentPickerView: View {
     let imageCapacity: Int
     let onChooseFiles: () -> Void
     let onAdd: ([HermexPickedMedia]) -> Void
+    let onDismiss: () -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -696,7 +814,7 @@ struct HermexAttachmentPickerView: View {
     private func chooseFiles() {
         guard !isBusy else { return }
         onChooseFiles()
-        dismiss()
+        onDismiss()
     }
 
     private func backToMenu() {
@@ -740,7 +858,7 @@ struct HermexAttachmentPickerView: View {
                 guard preparationFence.consume(operationID) else { return }
                 guard !media.isEmpty else { return }
                 onAdd(media)
-                dismiss()
+                onDismiss()
             } catch is CancellationError {
                 return
             } catch {
@@ -758,7 +876,7 @@ struct HermexAttachmentPickerView: View {
 
     private func dismissPicker() {
         cancelPreparation()
-        dismiss()
+        onDismiss()
     }
 
     private func photoAccessibilityLabel(for asset: PHAsset) -> String {

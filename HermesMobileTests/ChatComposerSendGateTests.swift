@@ -124,6 +124,12 @@ final class ChatComposerSendGateTests: XCTestCase {
 }
 
 final class HermexAttachmentPickerPolicyTests: XCTestCase {
+    func testMenuUsesBalancedLeftPlacement() {
+        XCTAssertEqual(HermexAttachmentPickerLayoutMetrics.menuWidth(containerWidth: 390), 280)
+        XCTAssertEqual(HermexAttachmentPickerLayoutMetrics.menuLeadingPadding, 12)
+        XCTAssertEqual(HermexAttachmentPickerLayoutMetrics.menuWidth(containerWidth: 250), 226)
+    }
+
     func testCapacityNeverDropsBelowZero() {
         XCTAssertEqual(HermexAttachmentPickerPolicy.availableCapacity(existingCount: 0), 8)
         XCTAssertEqual(HermexAttachmentPickerPolicy.availableCapacity(existingCount: 7), 1)

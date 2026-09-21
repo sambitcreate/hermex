@@ -291,7 +291,6 @@ struct BotChatComposerView: View {
                   model.attachments.items.count < HermexAttachmentPickerPolicy.maximumBotAttachments
             else { return }
             shouldRestoreFocusAfterPicker = isFocused
-            isFocused = false
             picker = .photos
         } label: {
             Image(systemName: "plus")

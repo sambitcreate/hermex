@@ -476,6 +476,28 @@ struct MessageComposerView: View {
                     }
             }
         )
+        .background {
+            HermexKeyboardRetainingOverlay(isPresented: showMediaPicker) {
+                HermexAttachmentPickerView(
+                    imageCapacity: HermexAttachmentPickerPolicy.availableCapacity(
+                        existingCount: pendingAttachments.count,
+                        maximum: HermexAttachmentPickerPolicy.maximumSessionImages
+                    ),
+                    onChooseFiles: {
+                        presentFilesAfterMediaPickerDismisses = true
+                    },
+                    onAdd: { media in
+                        guard !media.isEmpty else { return }
+                        deferFocusRestoreUntilUploadCompletes()
+                        onPhotoMediaSelected(media)
+                    },
+                    onDismiss: {
+                        showMediaPicker = false
+                    }
+                )
+            }
+            .frame(width: 0, height: 0)
+        }
         .task(id: draftMayReferenceSkill) {
             await loadSkillSuggestionsForChipsIfNeeded()
         }
@@ -506,29 +528,17 @@ struct MessageComposerView: View {
                 finishVoiceNote(translationHeight: 0)
             }
         }
-        .fullScreenCover(isPresented: $showMediaPicker, onDismiss: {
-            guard presentFilesAfterMediaPickerDismisses else { return }
-            presentFilesAfterMediaPickerDismisses = false
-            showFileImporter = true
-        }) {
-            HermexAttachmentPickerView(
-                imageCapacity: HermexAttachmentPickerPolicy.availableCapacity(
-                    existingCount: pendingAttachments.count,
-                    maximum: HermexAttachmentPickerPolicy.maximumSessionImages
-                ),
-                onChooseFiles: {
-                    presentFilesAfterMediaPickerDismisses = true
-                },
-                onAdd: { media in
-                    guard !media.isEmpty else { return }
-                    deferFocusRestoreUntilUploadCompletes()
-                    onPhotoMediaSelected(media)
-                }
-            )
-        }
         .onChange(of: showMediaPicker) { _, isPresented in
-            if !isPresented, !presentFilesAfterMediaPickerDismisses, !showFileImporter {
-                restoreFocusAfterPresentationDismissalSettles()
+            guard !isPresented else { return }
+            guard presentFilesAfterMediaPickerDismisses else {
+                if !showFileImporter { restoreFocusAfterPresentationDismissalSettles() }
+                return
+            }
+            presentFilesAfterMediaPickerDismisses = false
+            prepareForComposerPresentation()
+            Task { @MainActor in
+                await Task.yield()
+                showFileImporter = true
             }
         }
         .sheet(isPresented: $showsAllModelsSheet, onDismiss: restoreFocusAfterPresentationIfNeeded) {
@@ -859,7 +869,6 @@ struct MessageComposerView: View {
 
     private var composerPlusMenu: some View {
         Button {
-            prepareForComposerPresentation()
             showMediaPicker = true
         } label: {
             Image(systemName: "plus")

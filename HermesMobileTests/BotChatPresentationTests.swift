@@ -388,6 +388,27 @@ import XCTest
         XCTAssertEqual(model.attachments.items.count, 2)
     }
 
+    func testAttachmentPickerOverlayRetainsKeyboardFocus() async throws {
+        let model = AttachmentOverlayHarnessModel()
+        let window = try show(AttachmentOverlayHarnessView(model: model))
+        defer { close(window) }
+        await renderFrames()
+
+        let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? UITextField }.first)
+        XCTAssertTrue(editor.becomeFirstResponder())
+        await renderFrames()
+
+        model.isPresented = true
+        await renderFrames()
+        XCTAssertTrue(editor.isFirstResponder, "Opening attachment choices must retain keyboard focus.")
+        XCTAssertTrue(accessibilityLabels(in: window).contains("Attachment choices"))
+
+        model.isPresented = false
+        await renderFrames()
+        XCTAssertTrue(editor.isFirstResponder, "Closing attachment choices must retain keyboard focus.")
+        XCTAssertFalse(accessibilityLabels(in: window).contains("Attachment choices"))
+    }
+
     func testFocusedAttachmentSendKeepsRenderingWhileUploadIsPending() async throws {
         let wire = BotFixtureWire()
         let model = make(wire)
@@ -1117,6 +1138,36 @@ import XCTest
 /// No APIClient, active account or server data participates in these captures.
 @MainActor @Observable private final class SessionFixtureFocus {
     var isFocused = false
+}
+
+@MainActor @Observable
+private final class AttachmentOverlayHarnessModel {
+    var isPresented = false
+}
+
+private struct AttachmentOverlayHarnessView: View {
+    @Bindable var model: AttachmentOverlayHarnessModel
+    @State private var message = ""
+
+    var body: some View {
+        VStack {
+            Spacer()
+            TextField("Message", text: $message)
+                .textFieldStyle(.roundedBorder)
+                .padding()
+        }
+        .background {
+            HermexKeyboardRetainingOverlay(isPresented: model.isPresented) {
+                HermexAttachmentPickerView(
+                    imageCapacity: 1,
+                    onChooseFiles: {},
+                    onAdd: { _ in },
+                    onDismiss: { model.isPresented = false }
+                )
+            }
+            .frame(width: 0, height: 0)
+        }
+    }
 }
 
 private struct SessionChatPresentationFixture: View {
