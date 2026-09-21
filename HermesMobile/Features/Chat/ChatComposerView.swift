@@ -879,6 +879,7 @@ struct MessageComposerView: View {
         .buttonStyle(.plain)
         .tint(metaControlColor)
         .disabled(isConfigurationControlDisabled)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Composer options")
     }
 

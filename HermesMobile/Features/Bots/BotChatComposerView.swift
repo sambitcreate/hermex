@@ -309,6 +309,7 @@ struct BotChatComposerView: View {
                 || model.attachments.isImporting
                 || model.attachments.items.count >= HermexAttachmentPickerPolicy.maximumBotAttachments
         )
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Composer options")
     }
 
