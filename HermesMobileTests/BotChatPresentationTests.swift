@@ -377,7 +377,10 @@ import XCTest
         XCTAssertTrue(expanded.contains("Report.pdf"), expanded)
         XCTAssertFalse(expanded.contains("Photos"), expanded)
         XCTAssertFalse(expanded.contains("Files"), expanded)
-        XCTAssertGreaterThanOrEqual(descendants(window).compactMap { $0 as? UIButton }.filter { $0.menu != nil }.count, 1)
+        XCTAssertTrue(
+            accessibilityLabels(in: window).contains("Composer options"),
+            "The custom attachment picker remains reachable from the composer."
+        )
         editor.resignFirstResponder()
         await renderFrames()
         capture(window, name: "478-composer-attachments-collapsed")
@@ -1162,7 +1165,7 @@ private struct SessionChatPresentationFixture: View {
             onModelPickerOpen: {}, onSelectReasoningEffort: { _ in }, onLoadWorkspaceSuggestions: { _ in },
             onWorkspaceRegistryChanged: {}, onLoadPersonalitySuggestions: {}, onLoadSkillSuggestions: {},
             onSelectWorkspace: { _ in }, onSelectProfile: { _ in }, onHeightChange: { _ in },
-            onPhotoItemSelected: { _ in }, onFileURLsSelected: { _ in }, onPasteFileProviders: { _ in },
+            onPhotoMediaSelected: { _ in }, onFileURLsSelected: { _ in }, onPasteFileProviders: { _ in },
             onPasteFileURLs: { _ in }, onPasteImageProviders: { _ in }, onPasteImages: { _ in },
             onRemoveAttachment: { _ in }, onPreviewAttachment: { _ in }, onDismissUploadAttachmentError: {},
             onSelectFileReference: { _ in }, onOpenFileReference: { _ in }, onSelectGitBranch: { _ in },

@@ -66,9 +66,10 @@ final class PushRegistrationTests: XCTestCase {
         XCTAssertNil(PushEnvironment.current(bundle: TestBundle(values: [:])))
     }
 
-    func testShippingBuildDeclaresBothTheEntitlementMirrorAndTheAccessGroup() {
-        let bundle = Bundle(for: PushRegistrationTests.self)
-        let appBundle = Bundle(identifier: "com.uzairansar.hermesmobile") ?? bundle
+    func testBuiltAppDeclaresBothTheEntitlementMirrorAndTheAccessGroup() {
+        // Hosted XCTest runs inside the signed app, including contributor builds
+        // that use a local bundle identifier instead of the shipping identity.
+        let appBundle = Bundle.main
         XCTAssertNotNil(PushEnvironment.current(bundle: appBundle),
                         "HermesAPSEnvironment must mirror the aps-environment entitlement")
         let group = appBundle.object(forInfoDictionaryKey: "HermesKeychainAccessGroup") as? String

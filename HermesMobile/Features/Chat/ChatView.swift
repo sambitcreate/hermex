@@ -1,7 +1,6 @@
 import SwiftUI
 import SwiftData
 import UIKit
-import PhotosUI
 import UniformTypeIdentifiers
 
 private enum GitChatAlert: Identifiable {
@@ -513,8 +512,8 @@ struct ChatView: View {
             onHeightChange: { height in
                 composerHeight = height
             },
-            onPhotoItemSelected: { item in
-                Task { await handlePhotoSelection(item) }
+            onPhotoMediaSelected: { media in
+                Task { await handlePhotoSelection(media) }
             },
             onFileURLsSelected: { urls in
                 Task { await handleSelectedFileURLs(urls) }
@@ -2411,16 +2410,14 @@ struct ChatView: View {
         return imageExtensions.contains(fileExtension) ? attachment.data : nil
     }
 
-    private func handlePhotoSelection(_ item: PhotosPickerItem) async {
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                viewModel.setUploadAttachmentError(String(localized: "Could not read the selected photo."))
-                return
-            }
-            let filename = "image_\(Int(Date().timeIntervalSince1970))_\(UUID().uuidString.prefix(4)).jpg"
-            await viewModel.uploadAttachment(data: data, filename: filename, previewData: data)
-        } catch {
-            viewModel.setUploadAttachmentError(error.localizedDescription)
+    private func handlePhotoSelection(_ media: [HermexPickedMedia]) async {
+        for item in media {
+            guard !Task.isCancelled else { return }
+            await viewModel.uploadAttachment(
+                data: item.data,
+                filename: item.filename,
+                previewData: item.data
+            )
         }
     }
 

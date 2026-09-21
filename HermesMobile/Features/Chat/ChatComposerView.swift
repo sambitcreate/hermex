@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import PhotosUI
 
 private struct ComposerStatusView: View {
     let text: String
@@ -170,7 +169,7 @@ struct MessageComposerView: View {
     let onSelectWorkspace: (String) async -> Void
     let onSelectProfile: (ProfileSummary) -> Void
     let onHeightChange: (CGFloat) -> Void
-    let onPhotoItemSelected: (PhotosPickerItem) -> Void
+    let onPhotoMediaSelected: ([HermexPickedMedia]) -> Void
     let onFileURLsSelected: ([URL]) -> Void
     let onPasteFileProviders: ([NSItemProvider]) -> Void
     let onPasteFileURLs: ([URL]) -> Void
@@ -204,9 +203,8 @@ struct MessageComposerView: View {
     @State private var selectedQuote: ComposerQuote?
 
     @State private var deferredUploadFocusPhase: DeferredUploadFocusPhase = .none
-    @State private var selectedPhotoItems: [PhotosPickerItem] = []
-    @State private var showPhotoPicker = false
-    @State private var showCameraPicker = false
+    @State private var showMediaPicker = false
+    @State private var presentFilesAfterMediaPickerDismisses = false
     @State private var showFileImporter = false
     @State private var voiceInput = ComposerVoiceInputController()
     @State private var voiceNoteRecorder = ComposerVoiceNoteRecorder()
@@ -508,25 +506,28 @@ struct MessageComposerView: View {
                 finishVoiceNote(translationHeight: 0)
             }
         }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItems, matching: .images)
-        .onChange(of: selectedPhotoItems) {
-            let items = selectedPhotoItems
-            guard !items.isEmpty else { return }
-            deferFocusRestoreUntilUploadCompletes()
-            selectedPhotoItems.removeAll()
-            for item in items {
-                onPhotoItemSelected(item)
-            }
+        .fullScreenCover(isPresented: $showMediaPicker, onDismiss: {
+            guard presentFilesAfterMediaPickerDismisses else { return }
+            presentFilesAfterMediaPickerDismisses = false
+            showFileImporter = true
+        }) {
+            HermexAttachmentPickerView(
+                imageCapacity: HermexAttachmentPickerPolicy.availableCapacity(
+                    existingCount: pendingAttachments.count,
+                    maximum: HermexAttachmentPickerPolicy.maximumSessionImages
+                ),
+                onChooseFiles: {
+                    presentFilesAfterMediaPickerDismisses = true
+                },
+                onAdd: { media in
+                    guard !media.isEmpty else { return }
+                    deferFocusRestoreUntilUploadCompletes()
+                    onPhotoMediaSelected(media)
+                }
+            )
         }
-        .fullScreenCover(isPresented: $showCameraPicker) {
-            CameraPickerView { image in
-                deferFocusRestoreUntilUploadCompletes()
-                onPasteImages([image])
-            }
-            .ignoresSafeArea()
-        }
-        .onChange(of: showCameraPicker) { _, isPresented in
-            if !isPresented {
+        .onChange(of: showMediaPicker) { _, isPresented in
+            if !isPresented, !presentFilesAfterMediaPickerDismisses, !showFileImporter {
                 restoreFocusAfterPresentationDismissalSettles()
             }
         }
@@ -643,11 +644,6 @@ struct MessageComposerView: View {
                 optimisticWorkspacePath = nil
             }
         }
-        .onChange(of: showPhotoPicker) { _, isPresented in
-            if !isPresented, selectedPhotoItems.isEmpty {
-                restoreFocusAfterPresentationDismissalSettles()
-            }
-        }
         .onChange(of: showFileImporter) { _, isPresented in
             if !isPresented {
                 restoreFocusAfterPresentationDismissalSettles()
@@ -686,8 +682,7 @@ struct MessageComposerView: View {
             || shouldRestoreFocusAfterPresentation
             || showsAllModelsSheet
             || showsWorkspaceSheet
-            || showPhotoPicker
-            || showCameraPicker
+            || showMediaPicker
             || showFileImporter
     }
 
@@ -863,7 +858,10 @@ struct MessageComposerView: View {
     }
 
     private var composerPlusMenu: some View {
-        ChatUIKitMenuButton {
+        Button {
+            prepareForComposerPresentation()
+            showMediaPicker = true
+        } label: {
             Image(systemName: "plus")
                 .font(.system(size: plusIconSize, weight: .medium))
                 .foregroundStyle(metaControlColor)
@@ -877,51 +875,11 @@ struct MessageComposerView: View {
                     in: Circle()
                 )
                 .clipShape(Circle())
-        } menu: {
-            composerOptionsMenu()
         }
+        .buttonStyle(.plain)
         .tint(metaControlColor)
         .disabled(isConfigurationControlDisabled)
         .accessibilityLabel("Composer options")
-    }
-
-    private func composerOptionsMenu() -> UIMenu {
-        UIMenu(title: "", children: [
-            UIMenu(
-                title: String(localized: "Attach"),
-                options: [.displayInline],
-                children: [
-                    UIAction(
-                        title: String(localized: "Attach File"),
-                        image: UIImage(systemName: "paperclip")
-                    ) { _ in
-                        Task { @MainActor in
-                            prepareForComposerPresentation()
-                            showFileImporter = true
-                        }
-                    },
-                    UIAction(
-                        title: String(localized: "Photos"),
-                        image: UIImage(systemName: "photo.on.rectangle")
-                    ) { _ in
-                        Task { @MainActor in
-                            prepareForComposerPresentation()
-                            showPhotoPicker = true
-                        }
-                    },
-                    UIAction(
-                        title: String(localized: "Camera"),
-                        image: UIImage(systemName: "camera"),
-                        attributes: UIImagePickerController.isSourceTypeAvailable(.camera) ? [] : .disabled
-                    ) { _ in
-                        Task { @MainActor in
-                            prepareForComposerPresentation()
-                            showCameraPicker = true
-                        }
-                    }
-                ]
-            )
-        ])
     }
 
     @ViewBuilder

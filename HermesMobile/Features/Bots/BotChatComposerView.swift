@@ -286,7 +286,14 @@ struct BotChatComposerView: View {
     }
 
     private var plusMenu: some View {
-        ChatUIKitMenuButton {
+        Button {
+            guard model.mayImportAttachments,
+                  model.attachments.items.count < HermexAttachmentPickerPolicy.maximumBotAttachments
+            else { return }
+            shouldRestoreFocusAfterPicker = isFocused
+            isFocused = false
+            picker = .photos
+        } label: {
             Image(systemName: "plus")
                 .font(.system(size: plusIconSize, weight: .medium))
                 .foregroundStyle(Color(.secondaryLabel))
@@ -294,28 +301,15 @@ struct BotChatComposerView: View {
                 .adaptiveGlass(.regular, isInteractive: true, fallbackMaterial: .ultraThinMaterial,
                                inheritsClipping: true, in: Circle())
                 .clipShape(Circle())
-        } menu: {
-            UIMenu(children: [UIMenu(title: String(localized: "Attach"), options: [.displayInline], children: [
-                attachmentAction(.files, title: String(localized: "Attach File"), image: "paperclip"),
-                attachmentAction(.photos, title: String(localized: "Photos"), image: "photo.on.rectangle"),
-                attachmentAction(.camera, title: String(localized: "Camera"), image: "camera")
-            ])])
         }
+        .buttonStyle(.plain)
         .tint(Color(.secondaryLabel))
-        .disabled(!model.mayImportAttachments || model.attachments.isImporting)
+        .disabled(
+            !model.mayImportAttachments
+                || model.attachments.isImporting
+                || model.attachments.items.count >= HermexAttachmentPickerPolicy.maximumBotAttachments
+        )
         .accessibilityLabel("Composer options")
-    }
-
-    private func attachmentAction(_ choice: BotAttachmentPicker, title: String, image: String) -> UIAction {
-        UIAction(title: title, image: UIImage(systemName: image),
-                 attributes: choice == .camera && !UIImagePickerController.isSourceTypeAvailable(.camera) ? .disabled : []) { _ in
-            Task { @MainActor in
-                guard model.mayImportAttachments else { return }
-                shouldRestoreFocusAfterPicker = isFocused
-                isFocused = false
-                picker = choice
-            }
-        }
     }
 
     private var modeMenu: some View {
