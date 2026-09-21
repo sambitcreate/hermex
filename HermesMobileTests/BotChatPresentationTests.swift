@@ -373,7 +373,7 @@ import XCTest
         let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
         XCTAssertTrue(editor.becomeFirstResponder())
         await renderFrames()
-        let expanded = try screenshot(window, name: "478-composer-attachments-expanded")
+        let expanded = try screenshot(window, name: "478-composer-attachments-expanded", literalText: true)
         XCTAssertTrue(expanded.contains("Report.pdf"), expanded)
         XCTAssertFalse(expanded.contains("Photos"), expanded)
         XCTAssertFalse(expanded.contains("Files"), expanded)
@@ -434,7 +434,12 @@ import XCTest
         await renderFrames()
         let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
         XCTAssertTrue(editor.isKeyboardSendEnabled)
-        let busy = try screenshot(window, name: "480-busy-steer")
+        // Read the controls at their own scale. In a full-screen capture the
+        // small, secondary-color menu title can be discarded by Vision.
+        let composerBounds = descendants(window).filter { $0 is UIButton || $0 === editor }
+            .map { $0.convert($0.bounds, to: window) }
+            .reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -12, dy: -12)
+        let busy = try screenshot(window, name: "480-busy-steer", croppedTo: composerBounds, literalText: true)
         XCTAssertTrue(
             busy.contains("Steer")
                 || accessibilityLabels(in: window).contains("Message action: Steer"),
@@ -1085,11 +1090,24 @@ import XCTest
     }
 
     @discardableResult
-    private func screenshot(_ window: UIWindow, name: String, inspecting: ((UIImage) -> Void)? = nil) throws -> String {
+    private func screenshot(_ window: UIWindow, name: String, croppedTo bounds: CGRect? = nil, literalText: Bool = false,
+                            inspecting: ((UIImage) -> Void)? = nil) throws -> String {
         let image = capture(window, name: name)
         inspecting?(image)
+        var pixels = try XCTUnwrap(image.cgImage)
+        if let bounds {
+            let rect = bounds.intersection(window.bounds).applying(CGAffineTransform(scaleX: image.scale, y: image.scale))
+            pixels = try XCTUnwrap(pixels.cropping(to: rect))
+        }
         let request = VNRecognizeTextRequest()
-        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        // Tests render in English and assert literal UI copy, including filenames.
+        // Language correction can turn Report.pdf into Report.odf; do not ask
+        // OCR to rewrite what was rendered.
+        if literalText {
+            request.recognitionLanguages = ["en-US"]
+            request.usesLanguageCorrection = false
+        }
+        try VNImageRequestHandler(cgImage: pixels).perform([request])
         return request.results?.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ") ?? ""
     }
 
